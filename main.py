@@ -5,12 +5,9 @@ from fastapi import FastAPI, HTTPException
 
 app = FastAPI(title="Case Outcome Prediction System")
 
-DATA_FILE = (
-    Path(__file__).resolve().parent
-    / "data"
-    / "processed"
-    / "cases_clean.csv"
-)
+PROJECT_DIR = Path(__file__).resolve().parent
+DATA_FILE = PROJECT_DIR / "data" / "processed" / "cases_clean.csv"
+MODEL_FILE = PROJECT_DIR / "models" / "outcome_model_v2.joblib"
 
 
 @app.get("/")
@@ -46,14 +43,13 @@ def analytics():
         .unstack(fill_value=0)
     )
 
-    outcomes_by_category = category_table.to_dict(orient="index")
-
     return {
         "total_cases": total_cases,
         "outcome_counts": outcome_counts,
         "outcome_percentages": outcome_percentages,
-        "outcomes_by_category": outcomes_by_category,
+        "outcomes_by_category": category_table.to_dict(orient="index"),
     }
+
 
 @app.get("/similar-cases")
 def similar_cases(category: str, case_type: str, limit: int = 10):
@@ -75,22 +71,31 @@ def similar_cases(category: str, case_type: str, limit: int = 10):
     requested_type = case_type.strip().casefold()
 
     category_match = (
-        df["case_category"].fillna("").astype(str).str.strip().str.casefold()
+        df["case_category"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.casefold()
         == requested_category
     )
     type_match = (
-        df["case_type"].fillna("").astype(str).str.strip().str.casefold()
+        df["case_type"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.casefold()
         == requested_type
     )
 
     df["match_score"] = category_match.astype(int) + type_match.astype(int)
     df = df[df["match_score"] > 0].copy()
 
+    matched_category = category_match.loc[df.index]
+    matched_type = type_match.loc[df.index]
+
     df["match_basis"] = "same case type"
-    df.loc[category_match.loc[df.index] & ~type_match.loc[df.index], "match_basis"] = (
-        "same category"
-    )
-    df.loc[category_match.loc[df.index] & type_match.loc[df.index], "match_basis"] = (
+    df.loc[matched_category & ~matched_type, "match_basis"] = "same category"
+    df.loc[matched_category & matched_type, "match_basis"] = (
         "same category and type"
     )
 
@@ -114,28 +119,31 @@ def similar_cases(category: str, case_type: str, limit: int = 10):
         "matches": matches,
     }
 
+
 @app.post("/predict")
 def predict(payload: dict):
-    model_file = (
-        Path(__file__).resolve().parent
-        / "models"
-        / "outcome_model.joblib"
-    )
-
-    if not model_file.is_file():
+    if not MODEL_FILE.is_file():
         raise HTTPException(
             status_code=404,
-            detail="Trained model not found. Run train_model.py first.",
+            detail="Experimental model not found. Run train_model.py first.",
         )
 
     category = str(payload.get("case_category", "")).strip() or "Unknown"
     case_type = str(payload.get("case_type", "")).strip() or "Unknown"
+    category_type = f"{category.casefold()}|{case_type.casefold()}"
 
     import joblib
 
-    model = joblib.load(model_file)
+    model = joblib.load(MODEL_FILE)
+
     features = pd.DataFrame(
-        [{"case_category": category, "case_type": case_type}]
+        [
+            {
+                "case_category": category,
+                "case_type": case_type,
+                "category_type": category_type,
+            }
+        ]
     )
 
     predicted_outcome = str(model.predict(features)[0])
@@ -150,8 +158,9 @@ def predict(payload: dict):
         "model_scores": model_scores,
         "status": "experimental demo only",
         "warning": (
-            "This model had 40.2% test accuracy and did not identify any "
-            "Accepted cases in its evaluation. Scores are not verified "
-            "confidence estimates. This is not legal advice."
+            "Experimental model: test accuracy was 39.5%, balanced accuracy "
+            "was 46.4%, and macro F1 was 0.395 on one random test split. "
+            "Scores are not calibrated confidence estimates. This is not "
+            "legal advice."
         ),
     }
