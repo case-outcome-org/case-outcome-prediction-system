@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Node.js
+node_modules/
+dist/
+
+# Editor and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local model and data artifacts
+backend-ml/models/
+backend-ml/data/processed/
+backend-ml/data/cases.db
+
+# Backup files
+*before_database*
+*before_lawyer_features*
+*before_ai_analysis*
+
+# Development backups
+*.backup
+*.before-api
+*.before_database.py
+*.before_lawyer_features.jsx
+*before_ai_analysis.py

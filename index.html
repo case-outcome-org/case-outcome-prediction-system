@@ -1,10 +1,304 @@
+
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta http-equiv="refresh" content="0; url=architecture/">
-    <title>Case Outcome Prediction System</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Case Outcome Prediction System</title>
+<style>
+:root {
+  --bg:#f3f6fc; --card:#fff; --text:#172640; --muted:#64748b;
+  --line:#dce5f1; --blue:#2563eb; --soft:#eaf1ff;
+}
+body.dark {
+  --bg:#0c1424; --card:#142036; --text:#eef4ff; --muted:#a4b3c9;
+  --line:#2b3b55; --blue:#82aaff; --soft:#1c3153;
+}
+* { box-sizing:border-box }
+body {
+  margin:0; background:var(--bg); color:var(--text);
+  font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;
+  transition:.25s;
+}
+main { max-width:1150px; margin:auto; padding:26px 18px 45px }
+header { display:flex; justify-content:space-between; align-items:center;
+  gap:16px; flex-wrap:wrap; margin-bottom:28px }
+.brand { display:flex; gap:12px; align-items:center }
+.logo { background:linear-gradient(135deg,#2563eb,#0891b2); color:white;
+  border-radius:14px; width:45px; height:45px; display:grid;
+  place-items:center; font-size:23px }
+.eyebrow { color:var(--blue); font-size:11px; font-weight:800;
+  letter-spacing:2px; text-transform:uppercase }
+h1 { font-size:clamp(27px,4vw,40px); line-height:1.15;
+  letter-spacing:-1.5px; margin:10px 0 }
+h2 { font-size:19px; margin:0 0 5px }
+p { color:var(--muted); margin:5px 0 }
+button { padding:10px 14px; border-radius:10px; border:1px solid var(--line);
+  background:var(--card); color:var(--text); cursor:pointer;
+  font:inherit; font-weight:700 }
+button:hover { border-color:var(--blue) }
+button.primary { background:var(--blue); color:white; border-color:var(--blue) }
+.hero { display:grid; grid-template-columns:1.5fr 1fr; gap:16px }
+.card { background:var(--card); border:1px solid var(--line);
+  border-radius:17px; padding:22px; box-shadow:0 10px 30px #20365b0b }
+.tags { display:flex; gap:8px; flex-wrap:wrap; margin-top:18px }
+.tag { padding:6px 10px; background:var(--soft); color:var(--blue);
+  border-radius:30px; font-size:12px; font-weight:750 }
+.stats { display:grid; grid-template-columns:1fr 1fr; gap:12px }
+.stat { border:1px solid var(--line); border-radius:13px; padding:16px;
+  background:var(--card) }
+.stat strong { display:block; font-size:25px; color:var(--blue) }
+.stat span { font-size:12px; color:var(--muted) }
+.section { margin-top:25px }
+.section-head { display:flex; justify-content:space-between; gap:12px;
+  align-items:end; flex-wrap:wrap; margin-bottom:12px }
+.arch { background:var(--card); border:1px solid var(--line);
+  border-radius:17px; padding:20px }
+.row { display:grid; grid-template-columns:1fr 40px 1fr 40px 1fr;
+  align-items:stretch; gap:8px }
+.node { background:var(--bg); border:1px solid var(--line);
+  border-radius:14px; padding:17px; transition:.25s }
+.node h3 { font-size:15px; margin:9px 0 5px }
+.node p { font-size:12px }
+.icon { display:grid; place-items:center; width:36px; height:36px;
+  background:var(--soft); color:var(--blue); border-radius:10px; font-size:19px }
+.arrow { display:grid; place-items:center; color:var(--blue); font-size:23px }
+.node.active { border-color:var(--blue); box-shadow:0 0 0 3px #2563eb22;
+  transform:translateY(-2px) }
+.engine { border-color:#9b8af0 }
+.engine .icon { background:#eeeaff; color:#7454df }
+body.dark .engine .icon { background:#332a55; color:#c4b7ff }
+.subgrid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:13px }
+.mini { background:var(--card); border:1px solid var(--line);
+  border-radius:9px; padding:10px; font-size:12px; font-weight:700 }
+.mini small { display:block; color:var(--muted); font-weight:400; margin-top:3px }
+.optional { font-size:11px; color:var(--muted); margin-top:12px;
+  padding-top:10px; border-top:1px dashed var(--line) }
+.result { margin-top:16px; display:grid; grid-template-columns:1fr 1fr 1fr;
+  gap:10px }
+.result div { background:var(--soft); border-radius:10px; padding:13px;
+  font-size:12px; font-weight:750 }
+.lower { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:17px }
+.tabs { display:flex; gap:7px; flex-wrap:wrap; margin:15px 0 }
+.tabs button { font-size:12px }
+.tabs button.selected { background:var(--soft); border-color:var(--blue); color:var(--blue) }
+.flow { display:grid; grid-template-columns:1fr 25px 1fr 25px 1fr;
+  align-items:center; gap:5px }
+.flow div:not(.arrow) { border:1px solid var(--line); background:var(--bg);
+  border-radius:10px; padding:12px 6px; text-align:center;
+  font-size:11px; font-weight:750 }
+.flow .arrow { font-size:17px }
+.admin-item { border:1px solid var(--line); background:var(--bg);
+  border-radius:11px; padding:13px; margin-top:9px }
+.admin-item strong { display:block; font-size:12px }
+.admin-item span { color:var(--muted); font-size:11px }
+.notice { margin-top:17px; font-size:12px }
+footer { color:var(--muted); font-size:11px; margin-top:22px }
+@keyframes glow { 50% { box-shadow:0 0 0 8px #2563eb10 } }
+.pulse { animation:glow .7s ease }
+@media(max-width:850px) {
+  .hero,.lower { grid-template-columns:1fr }
+  .row { grid-template-columns:1fr }
+  .row .arrow { transform:rotate(90deg); min-height:25px }
+}
+@media(max-width:520px) {
+  main { padding:16px 12px }
+  .card,.arch { padding:15px }
+  .flow { grid-template-columns:1fr }
+  .flow .arrow { transform:rotate(90deg) }
+  .result { grid-template-columns:1fr }
+}
+@media(prefers-reduced-motion:reduce) {
+  *,*::before,*::after { animation:none!important; transition:none!important }
+}
+</style>
 </head>
 <body>
-    <p>Opening Architecture...</p>
+<main>
+<header>
+  <div class="brand">
+    <div class="logo">⚖</div>
+    <div>
+      <div class="eyebrow">Legal Technology · System Design</div>
+      <strong>Case Outcome Prediction System</strong>
+    </div>
+  </div>
+  <div>
+    <button id="theme">◐ Toggle theme</button>
+    <button class="primary" id="play">▶ Play flow</button>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="card">
+    <div class="eyebrow">Architecture overview</div>
+    <h1>From case documents<br>to informed predictions.</h1>
+    <p>A high-level view of case submission, backend processing,
+    AI/ML analysis, and the presentation of prediction results.</p>
+    <div class="tags">
+      <span class="tag">Document analysis</span>
+      <span class="tag">Similar cases</span>
+      <span class="tag">Outcome prediction</span>
+      <span class="tag">Admin management</span>
+    </div>
+  </div>
+  <div class="stats">
+    <div class="stat"><strong>01</strong><span>Submission layer</span></div>
+    <div class="stat"><strong>02</strong><span>Backend API</span></div>
+    <div class="stat"><strong>03</strong><span>AI / ML engine</span></div>
+    <div class="stat"><strong>04</strong><span>Results layer</span></div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <div><h2>System architecture</h2>
+      <p>Follow the main path from submission to prediction response.</p>
+    </div>
+    <span class="eyebrow">Interactive overview</span>
+  </div>
+  <div class="arch">
+    <div class="row">
+      <article class="node" id="submission">
+        <div class="icon">♙</div>
+        <h3>User / Lawyer</h3>
+        <p>Submit case details, descriptions, and supporting documents.</p>
+      </article>
+      <div class="arrow">→</div>
+      <article class="node" id="backend">
+        <div class="icon">⌘</div>
+        <h3>Backend API</h3>
+        <p>Validate input, coordinate services, and return structured responses.</p>
+      </article>
+      <div class="arrow">→</div>
+      <article class="node engine" id="engine">
+        <div class="icon">✦</div>
+        <h3>AI / ML Engine</h3>
+        <p>Analyze case information and run prediction services.</p>
+        <div class="subgrid">
+          <div class="mini">Document analysis
+            <small>Extract case details</small></div>
+          <div class="mini">Previous-case analysis
+            <small>Find similar cases</small></div>
+          <div class="mini">Outcome prediction
+            <small>Use trained ML model</small></div>
+          <div class="mini">Explanation
+            <small>Show supporting context</small></div>
+        </div>
+        <div class="optional">Local ML model · Optional Ollama LLM</div>
+      </article>
+    </div>
+    <div class="result">
+      <div>① Predicted outcome</div>
+      <div>② Similar-case references</div>
+      <div>③ Results dashboard</div>
+    </div>
+  </div>
+</section>
+
+<section class="lower">
+  <div class="card">
+    <h2>Explore request flows</h2>
+    <p>Choose a role to see its conceptual workflow.</p>
+    <div class="tabs">
+      <button class="selected" data-flow="user">User flow</button>
+      <button data-flow="lawyer">Lawyer flow</button>
+      <button data-flow="admin">Admin flow</button>
+    </div>
+    <div class="flow" id="flow">
+      <div>Submit case</div><div class="arrow">→</div>
+      <div>Backend API</div><div class="arrow">→</div>
+      <div>AI / ML engine</div>
+    </div>
+    <p id="caption" class="notice" aria-live="polite">
+      The user submits case details and reviews the prediction and similar cases.
+    </p>
+  </div>
+  <div class="card">
+    <h2>Admin management</h2>
+    <p>Administrative areas represented in the design.</p>
+    <div class="admin-item"><strong>Dataset management</strong>
+      <span>Maintain case records and dataset versions.</span></div>
+    <div class="admin-item"><strong>Model management</strong>
+      <span>Manage model versions and evaluation status.</span></div>
+    <div class="admin-item"><strong>System monitoring</strong>
+      <span>Review processing activity and system health.</span></div>
+  </div>
+</section>
+
+<div class="card notice">
+  <strong>Important:</strong>
+  This page is an architecture visualization, not a working prediction service.
+  Actual API integration, dataset management, permissions, and model behavior
+  depend on your backend implementation. Predictions should be treated as
+  decision support, not legal advice or guaranteed court outcomes.
+</div>
+<footer>Case Outcome Prediction System · Responsive architecture page</footer>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+
+$("theme").addEventListener("click", () => {
+  document.body.classList.toggle("dark");
+});
+
+const flows = {
+  user: {
+    steps:["Submit case","Backend API","AI / ML engine"],
+    caption:"The user submits case details and reviews the prediction and similar cases.",
+    nodes:["submission","backend","engine"]
+  },
+  lawyer: {
+    steps:["Lawyer submits case","Backend API","AI / ML engine"],
+    caption:"The lawyer submits case information for analysis and reviews the returned prediction and supporting context.",
+    nodes:["submission","backend","engine"]
+  },
+  admin: {
+    steps:["Manage dataset","Admin services","Manage model"],
+    caption:"The admin workflow represents dataset and model maintenance. Actual permissions and retraining depend on the backend.",
+    nodes:["submission","backend","engine"]
+  }
+};
+
+function selectFlow(name) {
+  const f = flows[name];
+  document.querySelectorAll("[data-flow]").forEach(button => {
+    button.classList.toggle("selected", button.dataset.flow === name);
+  });
+  $("flow").innerHTML = f.steps.map((step, i) =>
+    `${i ? '<div class="arrow">→</div>' : ''}<div>${step}</div>`
+  ).join("");
+  $("caption").textContent = f.caption;
+  document.querySelectorAll(".node").forEach(node => node.classList.remove("active"));
+  f.nodes.forEach(id => $(id).classList.add("active"));
+}
+
+document.querySelectorAll("[data-flow]").forEach(button => {
+  button.addEventListener("click", () => selectFlow(button.dataset.flow));
+});
+
+$("play").addEventListener("click", async () => {
+  const ids = ["submission", "backend", "engine"];
+  const button = $("play");
+  button.disabled = true;
+  button.textContent = "Playing…";
+  for (const id of ids) {
+    const node = $(id);
+    node.classList.add("active", "pulse");
+    node.scrollIntoView({
+      behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "auto" : "smooth",
+      block: "nearest"
+    });
+    await new Promise(resolve => setTimeout(resolve, 650));
+    node.classList.remove("pulse");
+  }
+  button.disabled = false;
+  button.textContent = "↻ Replay flow";
+});
+
+selectFlow("user");
+</script>
 </body>
 </html>
