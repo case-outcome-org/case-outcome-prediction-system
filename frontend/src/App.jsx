@@ -109,13 +109,13 @@ function Dashboard({
       label: "PROFESSIONAL REVIEW WORKSPACE",
       headline: "Every case, ready for review.",
       description:
-        "Inspect submitted case records, review available information, and keep your workflow organized.",
-      action: "Review case records",
-      actionHandler: onHistory,
+        "Create and review your own case records, organize information, and prepare important points.",
+      action: "Create a case to review",
+      actionHandler: onNew,
       sideTitle: "Ready to review a case?",
-      sideDescription: "Open case history to inspect submitted records and predictions.",
-      sideAction: "Open case history",
-      sideHandler: onHistory
+      sideDescription: "Create a case record, then use the lawyer analysis on its details.",
+      sideAction: "Create a case",
+      sideHandler: onNew
     },
     Admin: {
       className: "dashboard-admin",
@@ -253,7 +253,7 @@ function Dashboard({
           <strong>Decision-support prototype</strong>
           <br />
           Model output is experimental, has limited test accuracy, and is not
-          legal advice. Role selection is not secure authentication.
+          legal advice. Sign-up roles are self-selected for this prototype.
         </p>
       </div>
     </section>
@@ -262,6 +262,15 @@ function Dashboard({
 
 export default function App() {
   const [role, setRole] = useState("User");
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authMode, setAuthMode] = useState("login");
+  const [authName, setAuthName] = useState("");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authRole, setAuthRole] = useState("User");
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [authError, setAuthError] = useState("");
   const [cases, setCases] = useState([]);
   const [view, setView] = useState("dashboard");
   const [selectedCase, setSelectedCase] = useState(null);
@@ -272,10 +281,52 @@ export default function App() {
   const [error, setError] = useState("");
   const [analytics, setAnalytics] = useState(null);
 
+  // Added for lawyer important-points analysis
+  const [lawyerAnalysis, setLawyerAnalysis] = useState(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState("");
+
+  function authorizedFetch(path, options = {}) {
+    const token = sessionStorage.getItem("caseOutcomeToken");
+    const headers = {
+      ...options.headers,
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    };
+    return fetch(path, { ...options, headers });
+  }
+
   useEffect(() => {
-    fetch("/api/cases")
+    const token = sessionStorage.getItem("caseOutcomeToken");
+    if (!token) {
+      setAuthReady(true);
+      return;
+    }
+
+    fetch("/api/auth/me", {
+      headers: { Authorization: `Bearer ${token}` }
+    })
       .then(response => {
-        if (!response.ok) throw new Error("Could not load saved cases.");
+        if (!response.ok) throw new Error("Login session expired.");
+        return response.json();
+      })
+      .then(user => {
+        setCurrentUser(user);
+        setRole(user.role);
+      })
+      .catch(() => sessionStorage.removeItem("caseOutcomeToken"))
+      .finally(() => setAuthReady(true));
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setCases([]);
+      setAnalytics(null);
+      return;
+    }
+
+    authorizedFetch("/api/cases")
+      .then(response => {
+        if (!response.ok) throw new Error("Could not load your saved cases.");
         return response.json();
       })
       .then(data => {
@@ -286,16 +337,15 @@ export default function App() {
         })));
       })
       .catch(err => setError(err.message));
-  }, []);
-  useEffect(() => {
-    fetch("/api/analytics")
+
+    authorizedFetch("/api/analytics")
       .then(response => {
         if (!response.ok) throw new Error("Could not load dataset statistics.");
         return response.json();
       })
       .then(data => setAnalytics(data))
       .catch(() => setAnalytics(null));
-  }, []);
+  }, [currentUser]);
 
   const completedCount = cases.filter(item => item.predicted_outcome).length;
   const pendingCount = cases.length - completedCount;
@@ -314,7 +364,7 @@ export default function App() {
     };
 
     try {
-      const response = await fetch("/api/cases", {
+      const response = await authorizedFetch("/api/cases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -351,27 +401,227 @@ export default function App() {
       setSubmitting(false);
     }
   }
+
+  async function submitAuth(event) {
+    event.preventDefault();
+    setAuthError("");
+    setAuthSubmitting(true);
+    const isRegister = authMode === "register";
+
+    try {
+      const response = await fetch(
+        isRegister ? "/api/auth/register" : "/api/auth/login",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            isRegister
+              ? {
+                  name: authName.trim(),
+                  email: authEmail.trim(),
+                  password: authPassword,
+                  role: authRole
+                }
+              : { email: authEmail.trim(), password: authPassword }
+          )
+        }
+      );
+
+      if (!response.ok) {
+        const details = await response.text();
+        throw new Error(`Account request failed (${response.status}). ${details}`);
+      }
+
+      const result = await response.json();
+      sessionStorage.setItem("caseOutcomeToken", result.access_token);
+      setCurrentUser(result.user);
+      setRole(result.user.role);
+      setAuthPassword("");
+      setAuthError("");
+    } catch (err) {
+      setAuthError(err.message);
+    } finally {
+      setAuthSubmitting(false);
+    }
+  }
+
+  async function signOut() {
+    try {
+      await authorizedFetch("/api/auth/logout", { method: "POST" });
+    } catch {
+      // Clear the local session even if the server is temporarily unavailable.
+    }
+    sessionStorage.removeItem("caseOutcomeToken");
+    setCurrentUser(null);
+    setCases([]);
+    setSelectedCase(null);
+    setLawyerAnalysis(null);
+    setView("dashboard");
+    setError("");
+  }
+
+  // Added for lawyer important-points analysis
+  async function analyzeSelectedCase() {
+    const caseText = [
+      selectedCase?.title,
+      selectedCase?.description
+    ]
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+
+    if (!caseText) {
+      setAnalysisError("This case has no description to analyze.");
+      return;
+    }
+
+    setAnalysisError("");
+    setLawyerAnalysis(null);
+    setAnalysisLoading(true);
+
+    try {
+      const response = await authorizedFetch("/api/lawyer/important-points", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ case_text: caseText })
+      });
+
+      if (!response.ok) {
+        const details = await response.text();
+        throw new Error(`Analysis failed (${response.status}). ${details}`);
+      }
+
+      const result = await response.json();
+      setLawyerAnalysis(result);
+    } catch (err) {
+      setAnalysisError(err.message);
+    } finally {
+      setAnalysisLoading(false);
+    }
+  }
+
+  if (!authReady) {
+    return (
+      <main className="app-shell">
+        <section className="app-content-panel">
+          <h1>Case Outcome Prediction</h1>
+          <p>Checking your login session...</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (!currentUser) {
+    const isRegister = authMode === "register";
+    return (
+      <main className="app-shell">
+        <section className="app-content-panel">
+          <h1>{isRegister ? "Create your account" : "Log in"}</h1>
+          <p>
+            {isRegister
+              ? "Create a User or Lawyer account. Your account is available immediately."
+              : "Log in to access the cases saved to your account."}
+          </p>
+
+          {authError && <p role="alert">{authError}</p>}
+
+          <form onSubmit={submitAuth} className="case-form">
+            {isRegister && (
+              <label>
+                Name
+                <input
+                  required
+                  maxLength={100}
+                  value={authName}
+                  onChange={event => setAuthName(event.target.value)}
+                  placeholder="Enter your name"
+                />
+              </label>
+            )}
+
+            <label>
+              Email
+              <input
+                required
+                type="email"
+                maxLength={254}
+                autoComplete="email"
+                value={authEmail}
+                onChange={event => setAuthEmail(event.target.value)}
+                placeholder="you@example.com"
+              />
+            </label>
+
+            <label>
+              Password
+              <input
+                required
+                type="password"
+                minLength={8}
+                maxLength={128}
+                autoComplete={isRegister ? "new-password" : "current-password"}
+                value={authPassword}
+                onChange={event => setAuthPassword(event.target.value)}
+                placeholder={isRegister ? "At least 8 characters" : "Enter your password"}
+              />
+            </label>
+
+            {isRegister && (
+              <label>
+                Account type
+                <select
+                  value={authRole}
+                  onChange={event => setAuthRole(event.target.value)}
+                >
+                  <option value="User">User</option>
+                  <option value="Lawyer">Lawyer</option>
+                </select>
+              </label>
+            )}
+
+            <button
+              className="button dashboard-primary-button"
+              type="submit"
+              disabled={authSubmitting}
+            >
+              {authSubmitting
+                ? "Please wait..."
+                : isRegister
+                  ? "Create account"
+                  : "Log in"}
+            </button>
+          </form>
+
+          <p>
+            {isRegister ? "Already have an account? " : "Need an account? "}
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => {
+                setAuthError("");
+                setAuthMode(isRegister ? "login" : "register");
+              }}
+            >
+              {isRegister ? "Log in" : "Create one"}
+            </button>
+          </p>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell">
       <nav className="app-role-nav">
         <strong>Case Outcome Prediction</strong>
         <div className="app-role-buttons">
-          {["User", "Lawyer", "Admin"].map(item => (
-            <button
-              key={item}
-              className={
-                role === item
-                  ? "button dashboard-primary-button"
-                  : "button dashboard-secondary-button"
-              }
-              onClick={() => {
-                setRole(item);
-                setView("dashboard");
-              }}
-            >
-              {item}
-            </button>
-          ))}
+          <span>{currentUser.name} · {currentUser.role}</span>
+          <button
+            className="button dashboard-secondary-button"
+            onClick={signOut}
+          >
+            Log out
+          </button>
         </div>
       </nav>
 
@@ -390,6 +640,8 @@ export default function App() {
           onAdmin={() => setView("admin")}
           onSelect={item => {
             setSelectedCase(item);
+            setLawyerAnalysis(null);
+            setAnalysisError("");
             setView("detail");
           }}
         />
@@ -461,11 +713,13 @@ export default function App() {
       {view === "history" && (
         <section className="app-content-panel">
           <h1>Case history</h1>
-          <p>Records currently remain in browser memory and are lost on refresh.</p>
+          <p>These are the case records saved to your account.</p>
           <CaseTable
             cases={cases}
             onSelect={item => {
               setSelectedCase(item);
+              setLawyerAnalysis(null);
+              setAnalysisError("");
               setView("detail");
             }}
           />
@@ -537,6 +791,65 @@ export default function App() {
                 applicable laws, deadlines, and procedures independently.
               </p>
 
+              {/* Added lawyer important-points button and response */}
+              <button
+                className="button dashboard-primary-button"
+                onClick={analyzeSelectedCase}
+                disabled={analysisLoading}
+              >
+                {analysisLoading
+                  ? "Analyzing case..."
+                  : "Find important points for lawyer"}
+              </button>
+
+              {analysisError && <p role="alert">{analysisError}</p>}
+
+              {lawyerAnalysis && (
+                <div>
+                  <h3>{lawyerAnalysis.summary || "Important points"}</h3>
+
+                  {[
+                    ["Key facts", lawyerAnalysis.key_facts],
+                    ["Issues to review", lawyerAnalysis.issues_to_review],
+                    ["Supporting points", lawyerAnalysis.supporting_points],
+                    ["Opposing points", lawyerAnalysis.opposing_points],
+                    ["Questions for the lawyer", lawyerAnalysis.questions_for_lawyer]
+                  ].map(([heading, items]) =>
+                    Array.isArray(items) && items.length > 0 ? (
+                      <section key={heading}>
+                        <h4>{heading}</h4>
+                        <ul>
+                          {items.map((item, index) => (
+                            <li key={index}>
+                              {typeof item === "string" ? (
+                                item
+                              ) : (
+                                <>
+                                  <strong>{item.point}</strong>
+                                  {item.source_excerpt && (
+                                    <p>“{item.source_excerpt}”</p>
+                                  )}
+                                </>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </section>
+                    ) : null
+                  )}
+
+                  {lawyerAnalysis.source_verification_note && (
+                    <p>{lawyerAnalysis.source_verification_note}</p>
+                  )}
+
+                  {lawyerAnalysis.warning && (
+                    <p>
+                      <strong>Warning:</strong> {lawyerAnalysis.warning}
+                    </p>
+                  )}
+                </div>
+              )}
+
               <h3>1. Case Summary</h3>
               <p>{selectedCase.description || "No case description was provided."}</p>
 
@@ -583,6 +896,7 @@ export default function App() {
               </p>
             </section>
           )}
+
           <button
             className="button dashboard-secondary-button"
             onClick={() => setView("history")}
@@ -600,5 +914,3 @@ export default function App() {
     </main>
   );
 }
-
-
