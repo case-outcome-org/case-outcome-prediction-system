@@ -1,13 +1,18 @@
 from pathlib import Path
 import json
 import sqlite3
-from datetime import datetime, timezone
+import hashlib
+import hmac
+import re
+import secrets
+from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
+from typing import Literal
 
 app = FastAPI(title="Case Outcome Prediction System")
 
@@ -27,11 +32,63 @@ def get_connection():
     DB_FILE.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_FILE)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
 
 def initialize_database():
     with get_connection() as connection:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('User', 'Lawyer', 'Admin')),
+                created_at TEXT NOT NULL
+            )
+        """)
+        users_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+        ).fetchone()["sql"]
+        if "admin" not in users_sql.casefold():
+            # Safely rebuild the users table to expand its role check while
+            # retaining all users and their still-valid session rows.
+            connection.commit()
+            connection.execute("PRAGMA foreign_keys = OFF")
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("""
+                    CREATE TABLE users_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                        password_hash TEXT NOT NULL,
+                        role TEXT NOT NULL CHECK (role IN ('User', 'Lawyer', 'Admin')),
+                        created_at TEXT NOT NULL
+                    )
+                """)
+                connection.execute("""
+                    INSERT INTO users_new (id, name, email, password_hash, role, created_at)
+                    SELECT id, name, email, password_hash, role, created_at FROM users
+                """)
+                connection.execute("DROP TABLE users")
+                connection.execute("ALTER TABLE users_new RENAME TO users")
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                connection.execute("PRAGMA foreign_keys = ON")
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
         connection.execute("""
             CREATE TABLE IF NOT EXISTS cases (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,12 +101,38 @@ def initialize_database():
                 model_scores TEXT,
                 prediction_status TEXT NOT NULL,
                 warning TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                owner_id INTEGER REFERENCES users(id)
             )
         """)
+        case_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(cases)")
+        }
+        if "owner_id" not in case_columns:
+            connection.execute(
+                "ALTER TABLE cases ADD COLUMN owner_id INTEGER REFERENCES users(id)"
+            )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cases_owner_id ON cases(owner_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)"
+        )
 
 
 initialize_database()
+
+
+class RegisterInput(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=8, max_length=128)
+    role: Literal["User", "Lawyer"]
+
+
+class LoginInput(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
 
 
 class CaseInput(BaseModel):
@@ -62,6 +145,86 @@ class CaseInput(BaseModel):
 
 class LawyerAnalysisInput(BaseModel):
     case_text: str = Field(min_length=1, max_length=30000)
+
+
+PASSWORD_ITERATIONS = 600_000
+SESSION_DAYS = 7
+
+
+def public_user(user):
+    return {
+        "id": user["id"],
+        "name": user["name"],
+        "email": user["email"],
+        "role": user["role"],
+    }
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS
+    )
+    return f"pbkdf2_sha256${PASSWORD_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        algorithm, iterations_text, salt_hex, digest_hex = encoded.split("$")
+        if algorithm != "pbkdf2_sha256":
+            return False
+        iterations = int(iterations_text)
+        if iterations < 100_000 or iterations > 2_000_000:
+            return False
+        candidate = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), iterations
+        ).hex()
+        return hmac.compare_digest(candidate, digest_hex)
+    except (ValueError, TypeError):
+        return False
+
+
+def create_session(user_id: int) -> str:
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with get_connection() as connection:
+        connection.execute(
+            "INSERT INTO sessions (token_hash, user_id, expires_at, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                token_hash,
+                user_id,
+                (now + timedelta(days=SESSION_DAYS)).isoformat(),
+                now.isoformat(),
+            ),
+        )
+    return token
+
+
+def get_current_user(authorization: str | None = Header(default=None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Please log in to access this feature.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = authorization[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Invalid login session.")
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    now = datetime.now(timezone.utc).isoformat()
+    with get_connection() as connection:
+        user = connection.execute(
+            """SELECT users.id, users.name, users.email, users.role
+               FROM sessions JOIN users ON users.id = sessions.user_id
+               WHERE sessions.token_hash = ? AND sessions.expires_at > ?""",
+            (token_hash, now),
+        ).fetchone()
+    if user is None:
+        raise HTTPException(status_code=401, detail="Login session expired. Please log in again.")
+    return public_user(user)
+
 
 def predict_outcome(category: str, case_type: str):
     if not MODEL_FILE.is_file():
@@ -95,6 +258,7 @@ def predict_outcome(category: str, case_type: str):
 
 def row_to_dict(row):
     item = dict(row)
+    item.pop("owner_id", None)
     item["model_scores"] = (
         json.loads(item["model_scores"])
         if item["model_scores"]
@@ -113,8 +277,70 @@ def health():
     return {"status": "ok"}
 
 
+@app.post("/auth/register")
+def register(payload: RegisterInput):
+    name = payload.name.strip()
+    email = payload.email.strip().casefold()
+    if not name:
+        raise HTTPException(status_code=422, detail="Name is required.")
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise HTTPException(status_code=422, detail="Enter a valid email address.")
+
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        with get_connection() as connection:
+            cursor = connection.execute(
+                """INSERT INTO users (name, email, password_hash, role, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (name, email, hash_password(payload.password), payload.role, now),
+            )
+            user_id = cursor.lastrowid
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=409, detail="An account already exists for this email."
+        ) from exc
+
+    token = create_session(user_id)
+    with get_connection() as connection:
+        user = connection.execute(
+            "SELECT id, name, email, role FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+    return {"access_token": token, "token_type": "bearer", "user": public_user(user)}
+
+
+@app.post("/auth/login")
+def login(payload: LoginInput):
+    email = payload.email.strip().casefold()
+    with get_connection() as connection:
+        user = connection.execute(
+            "SELECT * FROM users WHERE email = ?", (email,)
+        ).fetchone()
+    if user is None or not verify_password(payload.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Email or password is incorrect.")
+
+    token = create_session(user["id"])
+    return {"access_token": token, "token_type": "bearer", "user": public_user(user)}
+
+
+@app.get("/auth/me")
+def auth_me(current_user: dict = Depends(get_current_user)):
+    return current_user
+
+
+@app.post("/auth/logout")
+def auth_logout(
+    authorization: str = Header(...),
+    current_user: dict = Depends(get_current_user),
+):
+    token = authorization[7:].strip()
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with get_connection() as connection:
+        connection.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+    return {"message": "Logged out."}
+
+
 @app.get("/analytics")
-def analytics():
+def analytics(current_user: dict = Depends(get_current_user)):
     if not DATA_FILE.exists():
         raise HTTPException(
             status_code=404,
@@ -145,7 +371,12 @@ def analytics():
 
 
 @app.get("/similar-cases")
-def similar_cases(category: str, case_type: str, limit: int = 10):
+def similar_cases(
+    category: str,
+    case_type: str,
+    limit: int = 10,
+    current_user: dict = Depends(get_current_user),
+):
     if not DATA_FILE.exists():
         raise HTTPException(
             status_code=404,
@@ -202,7 +433,7 @@ def similar_cases(category: str, case_type: str, limit: int = 10):
 
 
 @app.post("/predict")
-def predict(payload: dict):
+def predict(payload: dict, current_user: dict = Depends(get_current_user)):
     category = str(payload.get("case_category", "")).strip() or "Unknown"
     case_type = str(payload.get("case_type", "")).strip() or "Unknown"
 
@@ -217,9 +448,15 @@ def predict(payload: dict):
 
 
 @app.post("/lawyer/important-points")
-def lawyer_important_points(payload: LawyerAnalysisInput):
+def lawyer_important_points(
+    payload: LawyerAnalysisInput,
+    current_user: dict = Depends(get_current_user),
+):
     """Extract source-backed review points using local Ollama."""
     import os
+
+    if current_user["role"] != "Lawyer":
+        raise HTTPException(status_code=403, detail="This feature is for Lawyer accounts.")
 
     case_text = payload.case_text.strip()
     if not case_text:
@@ -378,12 +615,15 @@ def lawyer_important_points(payload: LawyerAnalysisInput):
     return analysis
 
 @app.post("/cases")
-def create_case(payload: CaseInput):
+def create_case(
+    payload: CaseInput,
+    current_user: dict = Depends(get_current_user),
+):
     title = payload.title.strip()
     category = payload.case_category.strip() or "Unknown"
     case_type = payload.case_type.strip()
     description = payload.description.strip()
-    role = payload.role.strip()
+    role = current_user["role"]
 
     if not title or not case_type or not description:
         raise HTTPException(
@@ -403,9 +643,9 @@ def create_case(payload: CaseInput):
             INSERT INTO cases (
                 title, case_category, case_type, description, role,
                 predicted_outcome, model_scores, prediction_status,
-                warning, created_at
+                warning, created_at, owner_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 title,
@@ -418,6 +658,7 @@ def create_case(payload: CaseInput):
                 "Prediction received",
                 WARNING,
                 created_at,
+                current_user["id"],
             ),
         )
 
@@ -430,21 +671,33 @@ def create_case(payload: CaseInput):
 
 
 @app.get("/cases")
-def list_cases():
+def list_cases(current_user: dict = Depends(get_current_user)):
     with get_connection() as connection:
-        rows = connection.execute(
-            "SELECT * FROM cases ORDER BY id DESC"
-        ).fetchall()
+        if current_user["role"] == "Admin":
+            rows = connection.execute(
+                "SELECT * FROM cases ORDER BY id DESC"
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT * FROM cases WHERE owner_id = ? ORDER BY id DESC",
+                (current_user["id"],),
+            ).fetchall()
 
     return {"cases": [row_to_dict(row) for row in rows]}
 
 
 @app.get("/cases/{case_id}")
-def get_case(case_id: int):
+def get_case(case_id: int, current_user: dict = Depends(get_current_user)):
     with get_connection() as connection:
-        row = connection.execute(
-            "SELECT * FROM cases WHERE id = ?", (case_id,)
-        ).fetchone()
+        if current_user["role"] == "Admin":
+            row = connection.execute(
+                "SELECT * FROM cases WHERE id = ?", (case_id,)
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT * FROM cases WHERE id = ? AND owner_id = ?",
+                (case_id, current_user["id"]),
+            ).fetchone()
 
     if row is None:
         raise HTTPException(status_code=404, detail="Case not found.")
@@ -453,28 +706,48 @@ def get_case(case_id: int):
 
 
 @app.get("/case-analytics")
-def case_analytics():
+def case_analytics(current_user: dict = Depends(get_current_user)):
     with get_connection() as connection:
-        total = connection.execute(
-            "SELECT COUNT(*) FROM cases"
-        ).fetchone()[0]
-
-        rows = connection.execute(
-            """
-            SELECT predicted_outcome, COUNT(*) AS count
-            FROM cases
-            WHERE predicted_outcome IS NOT NULL
-            GROUP BY predicted_outcome
-            """
-        ).fetchall()
-
-        status_rows = connection.execute(
-            """
-            SELECT prediction_status, COUNT(*) AS count
-            FROM cases
-            GROUP BY prediction_status
-            """
-        ).fetchall()
+        if current_user["role"] == "Admin":
+            total = connection.execute("SELECT COUNT(*) FROM cases").fetchone()[0]
+            rows = connection.execute(
+                """
+                SELECT predicted_outcome, COUNT(*) AS count
+                FROM cases
+                WHERE predicted_outcome IS NOT NULL
+                GROUP BY predicted_outcome
+                """
+            ).fetchall()
+            status_rows = connection.execute(
+                """
+                SELECT prediction_status, COUNT(*) AS count
+                FROM cases
+                GROUP BY prediction_status
+                """
+            ).fetchall()
+        else:
+            total = connection.execute(
+                "SELECT COUNT(*) FROM cases WHERE owner_id = ?",
+                (current_user["id"],),
+            ).fetchone()[0]
+            rows = connection.execute(
+                """
+                SELECT predicted_outcome, COUNT(*) AS count
+                FROM cases
+                WHERE owner_id = ? AND predicted_outcome IS NOT NULL
+                GROUP BY predicted_outcome
+                """,
+                (current_user["id"],),
+            ).fetchall()
+            status_rows = connection.execute(
+                """
+                SELECT prediction_status, COUNT(*) AS count
+                FROM cases
+                WHERE owner_id = ?
+                GROUP BY prediction_status
+                """,
+                (current_user["id"],),
+            ).fetchall()
 
     outcome_counts = {
         row["predicted_outcome"]: row["count"]

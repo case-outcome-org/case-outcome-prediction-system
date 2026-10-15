@@ -45,3 +45,6 @@ backend-ml/data/cases.db
 *.before_database.py
 *.before_lawyer_features.jsx
 *before_ai_analysis.py
+# Local dataset and trained model folders
+/data/
+/models/
