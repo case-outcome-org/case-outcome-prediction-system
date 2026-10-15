@@ -1,9 +1,8 @@
 from datetime import datetime, timezone
 from getpass import getpass
 import re
-import sqlite3
 
-from main import DB_FILE, get_connection, hash_password
+from main import DATABASE_URL, DB_FILE, DB_INTEGRITY_ERRORS, get_connection, hash_password
 
 
 def main():
@@ -34,11 +33,12 @@ def main():
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
-    except sqlite3.IntegrityError as exc:
+    except DB_INTEGRITY_ERRORS as exc:
         raise SystemExit("An account already exists for this email.") from exc
 
     print(f"Admin account created for {email}.")
-    print(f"Accounts are stored in: {DB_FILE}")
+    storage = "the configured hosted database" if DATABASE_URL else str(DB_FILE)
+    print(f"Accounts are stored in: {storage}")
     print("You can now log in through the frontend using this email and password.")
 
 

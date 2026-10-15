@@ -1,5 +1,13 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import "./App.css";
+
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
+
+function apiUrl(path) {
+  if (!API_BASE_URL) return path;
+  const route = path.startsWith("/api/") ? path.slice(4) : path;
+  return `${API_BASE_URL}${route}`;
+}
 
 const roles = {
   User: {
@@ -292,7 +300,7 @@ export default function App() {
       ...options.headers,
       ...(token ? { Authorization: `Bearer ${token}` } : {})
     };
-    return fetch(path, { ...options, headers });
+    return fetch(apiUrl(path), { ...options, headers });
   }
 
   useEffect(() => {
@@ -302,7 +310,7 @@ export default function App() {
       return;
     }
 
-    fetch("/api/auth/me", {
+    fetch(apiUrl("/api/auth/me"), {
       headers: { Authorization: `Bearer ${token}` }
     })
       .then(response => {
@@ -410,7 +418,7 @@ export default function App() {
 
     try {
       const response = await fetch(
-        isRegister ? "/api/auth/register" : "/api/auth/login",
+        apiUrl(isRegister ? "/api/auth/register" : "/api/auth/login"),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

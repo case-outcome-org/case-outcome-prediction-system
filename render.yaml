@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: case-outcome-api
+    runtime: python
+    plan: free
+    rootDir: backend-ml
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: OLLAMA_URL
+        value: https://ollama.com
+      - key: OLLAMA_API_KEY
+        sync: false
+      - key: OLLAMA_MODEL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: https://case-outcome-org.github.io,http://localhost:5173
